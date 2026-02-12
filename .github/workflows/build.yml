@@ -50,7 +50,7 @@ jobs:
         run: |
           wget -O chromium/linux/chrome.tar.xz "https://github.com/ungoogled-software/ungoogled-chromium-portablelinux/releases/download/144.0.7559.109-1/ungoogled-chromium-144.0.7559.109-1-arm64_linux.tar.xz"
           #wget -O chromium/linux/chrome.zip "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F1582450%2Fchrome-linux.zip?alt=media"
-          tar xvf -q chromium/linux/chrome.tar.xz -d chromium/linux
+          tar xvf chromium/linux/chrome.tar.xz -C chromium/linux/
           mv chromium/linux/ungoogled-chromium-144.0.7559.109-1-arm64_linux chromium/linux/chrome
           chmod +x chromium/linux/chrome/chrome
 
