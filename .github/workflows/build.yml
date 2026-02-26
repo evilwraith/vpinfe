@@ -44,7 +44,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path chromium\linux,chromium\windows,chromium\mac
 
-# 5a. Download Linux Chromium (Fixed architecture condition)
+# 5a. Download Linux Chromium
       - name: Download Linux Chromium
         if: runner.os == 'Linux' && runner.arch == 'X64'
         run: |
@@ -175,7 +175,7 @@ jobs:
         if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: vpinfe-${{ runner.os }}-${{ runner.arch }}
+          name: ${{ runner.os == 'Linux' && format('vpinfe-{0}-{1}', runner.os, runner.arch) || format('vpinfe-{0}', runner.os) }}
           path: dist/
 
       # 15. Build Linux slim variant (no bundled Chromium - uses system chromium)
@@ -195,7 +195,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: vpinfe-Linux-slim
+          name: vpinfe-Linux-${{ runner.arch }}-slim
           path: dist/
 
       # 16. Build Windows slim variant (no bundled Chromium - uses system Chrome/Chromium)
