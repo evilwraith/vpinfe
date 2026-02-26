@@ -10,7 +10,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-24.04-arm, windows-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
 
     runs-on: ${{ matrix.os }}
 
@@ -44,12 +44,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path chromium\linux,chromium\windows,chromium\mac
 
-      # 5. Download Linux Chromium
+# 5a. Download Linux Chromium (Fixed architecture condition)
       - name: Download Linux Chromium
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: |
+          wget -O chromium/linux/chrome.zip "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F1568190%2Fchrome-linux.zip?generation=1768270474193258&alt=media"
+          unzip -q chromium/linux/chrome.zip -d chromium/linux
+          mv chromium/linux/chrome-linux chromium/linux/chrome
+          chmod +x chromium/linux/chrome/chrome
+
+      # 5b. Download ARM Linux Chromium
+      - name: Download ARM Linux Chromium
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
         run: |
           wget -O chromium/linux/chrome.tar.xz "https://github.com/ungoogled-software/ungoogled-chromium-portablelinux/releases/download/144.0.7559.109-1/ungoogled-chromium-144.0.7559.109-1-arm64_linux.tar.xz"
-          #wget -O chromium/linux/chrome.zip "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F1582450%2Fchrome-linux.zip?alt=media"
           tar xvf chromium/linux/chrome.tar.xz -C chromium/linux/
           mv chromium/linux/ungoogled-chromium-144.0.7559.109-1-arm64_linux chromium/linux/chrome
           chmod +x chromium/linux/chrome/chrome
@@ -108,9 +116,9 @@ jobs:
         run: cp vpinfe.bat dist/vpinfe/
         shell: bash
 
-      # 10. Upload artifact per OS
+# 10. Upload artifact per OS (Fixed naming to prevent clashes)
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpinfe-${{ runner.os }}
+          name: vpinfe-${{ runner.os }}-${{ runner.arch }}
           path: dist/
