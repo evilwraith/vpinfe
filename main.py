@@ -25,22 +25,24 @@ from frontend.api import API
 from frontend.ws_bridge import WebSocketBridge
 from frontend.chromium_manager import ChromiumManager
 from common.iniconfig import IniConfig
-from clioptions import parseArgs
-from managerui.managerui import start_manager_ui, stop_manager_ui
-from nicegui import app as nicegui_app
 from platformdirs import user_config_dir
 from common.themes import ThemeRegistry
 
 # Get the base path
 base_path = os.path.dirname(os.path.abspath(__file__))
 
-nicegui_app.add_static_files('/static', os.path.join(base_path, 'managerui/static'))
-
-# Use platform-specific config directory
+# Load config BEFORE importing clioptions/managerui (they create IniConfig at import time)
 config_dir = Path(user_config_dir("vpinfe", "vpinfe"))
 config_dir.mkdir(parents=True, exist_ok=True)
 config_path = config_dir / "vpinfe.ini"
 iniconfig = IniConfig(str(config_path))
+
+# Now safe to import modules that create their own IniConfig at import time
+from clioptions import parseArgs
+from managerui.managerui import start_manager_ui, stop_manager_ui, set_first_run, _shutdown_event
+from nicegui import app as nicegui_app
+
+nicegui_app.add_static_files('/static', os.path.join(base_path, 'managerui/static'))
 
 # Shared instances accessible from other modules (e.g. remote.py)
 ws_bridge = None
@@ -79,8 +81,24 @@ def create_api_instances():
         print(f"[Main] Registered API for window '{window_name}'")
 
 
-if len(sys.argv) > 0:
-    parseArgs()
+cli_args = parseArgs() if len(sys.argv) > 0 else None
+headless = cli_args and cli_args.headless
+
+# On first run, start the manager UI early so chromium can load it
+if iniconfig.is_new:
+    import time
+    set_first_run(True)
+    manager_ui_port = int(iniconfig.config['Network'].get('manageruiport', '8001'))
+    start_manager_ui(port=manager_ui_port)
+    # Wait for the NiceGUI server to be ready before chromium tries to load it
+    for _attempt in range(30):
+        try:
+            import urllib.request as _ur
+            _ur.urlopen(f'http://localhost:{manager_ui_port}/api/remote-launch', timeout=1)
+            break
+        except Exception:
+            time.sleep(0.5)
+    print(f"[VPinFE] First run — Manager UI ready on port {manager_ui_port}")
 
 # Initialize theme registry and auto-install default themes
 try:
@@ -100,10 +118,12 @@ os.makedirs(themes_dir, exist_ok=True)
 nicegui_app.add_static_files('/themes', themes_dir)
 
 MOUNT_POINTS = {
-        '/tables/': os.path.abspath(iniconfig.config['Settings']['tablerootdir']),
         '/web/': os.path.join(base_path, 'web'),
         '/themes/': themes_dir,
         }
+table_root = iniconfig.config['Settings']['tablerootdir']
+if table_root:
+    MOUNT_POINTS['/tables/'] = os.path.abspath(table_root)
 http_server = CustomHTTPServer(MOUNT_POINTS)
 theme_assets_port = int(iniconfig.config['Network'].get('themeassetsport', '8000'))
 http_server.start_file_server(port=theme_assets_port)
@@ -115,11 +135,41 @@ start_manager_ui(port=manager_ui_port)
 # Start the WebSocket bridge
 ws_bridge.start()
 
-# Launch Chromium windows on configured monitors
-chromium_manager.launch_all_windows(iniconfig)
+if headless:
+    import signal
+    print("[Main] Headless mode: servers running without Chromium frontend")
+    print("[Main] Press Ctrl+C to stop...")
+    signal.signal(signal.SIGINT, lambda s, f: _shutdown_event.set())
+    signal.signal(signal.SIGTERM, lambda s, f: _shutdown_event.set())
+    _shutdown_event.wait()
+    print("\n[VPinFE] Shutting down...")
+elif iniconfig.is_new:
+    # First-run: show manager UI config page in a chromium window instead of theme
+    manager_ui_port = int(iniconfig.config['Network'].get('manageruiport', '8001'))
+    setup_url = f'http://localhost:{manager_ui_port}/'
+    screen_id = int(iniconfig.config['Displays'].get('tablescreenid', '0'))
+    if sys.platform == "darwin":
+        from frontend.chromium_manager import get_mac_screens
+        monitors = get_mac_screens()
+    else:
+        from screeninfo import get_monitors
+        monitors = get_monitors()
+    monitor = monitors[screen_id] if screen_id < len(monitors) else monitors[0]
+    print(f"[VPinFE] First run — loading Manager UI in chromium window for initial configuration.")
+    chromium_manager.launch_window(
+        window_name='table',
+        url=setup_url,
+        monitor=monitor,
+        index=0,
+    )
+    # Block until the setup chromium window exits
+    chromium_manager.wait_for_exit()
+else:
+    # Launch Chromium windows on configured monitors
+    chromium_manager.launch_all_windows(iniconfig)
 
-# Block until Chromium windows exit (replaces webview.start())
-chromium_manager.wait_for_exit()
+    # Block until Chromium windows exit (replaces webview.start())
+    chromium_manager.wait_for_exit()
 
 # Shutdown items - wrap each in try/except so restart check always runs
 print("[Main] Shutting down services...")

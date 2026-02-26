@@ -99,26 +99,180 @@ jobs:
               --add-data "chromium/windows;chromium/windows" \
               main.py
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            pyinstaller --onedir --noconfirm --name vpinfe \
+            pyinstaller --windowed -i icon/VPinFE.icns --osx-bundle-identifier com.vpinfe.main --noconfirm --name VPinFE \
               --add-data "web:web" \
               --add-data "managerui/static:managerui/static" \
               main.py
             # Preserve Chromium.app bundle structure (PyInstaller breaks symlinks)
-            mkdir -p dist/vpinfe/_internal/chromium
-            cp -R chromium/Chromium.app dist/vpinfe/_internal/chromium/Chromium.app
-            chmod +x dist/vpinfe/_internal/chromium/Chromium.app/Contents/MacOS/Chromium
+            mkdir -p dist/VPinFE.app/Contents/Frameworks/chromium
+            cp -R chromium/Chromium.app dist/VPinFE.app/Contents/Frameworks/chromium/Chromium.app
+            chmod +x dist/VPinFE.app/Contents/Frameworks/chromium/Chromium.app/Contents/MacOS/Chromium
+            #remove build directory
+            rm -rf dist/vpinfe
           fi
         shell: bash
+        
+      #9. Ad-hoc sign the app bundle
+      #    This prevents the "app is damaged" error and satisfies basic structural
+      #    signing requirements. Users will still need to allow the app via
+      #    System Settings > Privacy & Security > "Open Anyway" on first launch.
+      - name: Ad-hoc sign the app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - dist/VPinFE.app
+          echo "Signing exit code: $?"
+          codesign --verify --verbose dist/VPinFE.app
+        shell: bash
 
-      # 9. Copy Windows launcher bat file
+      #10. Remove extended attributes from the artifact before packaging
+      - name: Remove extended attributes (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo xattr -rc dist
+          echo "xattr exit code: $?"
+        shell: bash
+      #11. Create DMG
+      - name: Install create-dmg
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+        shell: bash
+         
+      - name: Package as DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          create-dmg \
+            --volname "VPinFE" \
+            --volicon "icon/VPinFE.icns" \
+            --background "icon/DMG_background.png" \
+            --window-pos 200 120 \
+            --window-size 610 475 \
+            --icon-size 100 \
+            --icon "VPinFE.app" 175 190 \
+            --hide-extension "VPinFE.app" \
+            --app-drop-link 425 190 \
+            "dist/VPinFE.dmg" \
+            "dist/VPinFE.app"
+        shell: bash
+        
+       #12 Upload artifact
+      - name: Upload build artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpinfe-macOS
+          path: dist/VPinFE.dmg
+
+
+
+      # 13. Copy Windows launcher bat file
       - name: Copy Windows launcher
         if: runner.os == 'Windows'
         run: cp vpinfe.bat dist/vpinfe/
         shell: bash
 
-# 10. Upload artifact per OS (Fixed naming to prevent clashes)
+      # 14. Upload artifact per OS
       - name: Upload build artifact
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: vpinfe-${{ runner.os }}-${{ runner.arch }}
           path: dist/
+
+      # 15. Build Linux slim variant (no bundled Chromium - uses system chromium)
+      - name: Build slim app with PyInstaller (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          rm -rf build dist
+          pyinstaller --onedir --noconfirm --name vpinfe \
+            --add-data "web:web" \
+            --add-data "managerui/static:managerui/static" \
+            --hidden-import pynput.keyboard._xorg \
+            --hidden-import pynput.mouse._xorg \
+            main.py
+        shell: bash
+
+      - name: Upload slim build artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpinfe-Linux-slim
+          path: dist/
+
+      # 16. Build Windows slim variant (no bundled Chromium - uses system Chrome/Chromium)
+      - name: Build slim app with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
+          pyinstaller --onedir --noconfirm --name vpinfe `
+            --add-data "web;web" `
+            --add-data "managerui/static;managerui/static" `
+            main.py
+
+      - name: Copy Windows launcher (slim)
+        if: runner.os == 'Windows'
+        run: cp vpinfe.bat dist/vpinfe/
+        shell: bash
+
+      - name: Upload slim build artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpinfe-Windows-slim
+          path: dist/
+
+      # 17. Build macOS slim variant (no bundled Chromium - uses system Chrome/Chromium)
+      - name: Build slim app with PyInstaller (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          rm -rf build dist
+          pyinstaller --windowed -i icon/VPinFE.icns --osx-bundle-identifier com.vpinfe.main --noconfirm --name VPinFE \
+            --add-data "web:web" \
+            --add-data "managerui/static:managerui/static" \
+            main.py
+           #remove build directory
+          rm -rf dist/vpinfe
+        shell: bash
+      #18. Ad-hoc sign the app bundle
+      #    This prevents the "app is damaged" error and satisfies basic structural
+      #    signing requirements. Users will still need to allow the app via
+      #    System Settings > Privacy & Security > "Open Anyway" on first launch.
+      - name: Ad-hoc sign the app (macOS Slim)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - dist/VPinFE.app
+          echo "Signing exit code: $?"
+          codesign --verify --verbose dist/VPinFE.app
+        shell: bash
+
+      #19. Remove extended attributes from the artifact before packaging
+      - name: Remove extended attributes (macOS Slim)
+        if: runner.os == 'macOS'
+        run: |
+          sudo xattr -rc dist
+          echo "xattr exit code: $?"
+        shell: bash
+      #20. Create DMG
+      - name: Package as DMG (macOS Slim)
+        if: runner.os == 'macOS'
+        run: |
+          create-dmg \
+            --volname "VPinFE" \
+            --volicon "icon/VPinFE.icns" \
+            --background "icon/DMG_background.png" \
+            --window-pos 200 120 \
+            --window-size 610 475 \
+            --icon-size 100 \
+            --icon "VPinFE.app" 175 190 \
+            --hide-extension "VPinFE.app" \
+            --app-drop-link 425 190 \
+            "dist/VPinFE.dmg" \
+            "dist/VPinFE.app"
+        shell: bash
+       #21 Upload artifact
+      - name: Upload slim build artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpinfe-macOS-slim
+          path: dist/VPinFE.dmg
+

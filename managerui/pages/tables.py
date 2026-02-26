@@ -16,8 +16,8 @@ from platformdirs import user_config_dir
 
 # Resolve project root and important paths explicitly
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-VPSDB_JSON_PATH = PROJECT_ROOT / 'vpsdb.json'
 CONFIG_DIR = Path(user_config_dir("vpinfe", "vpinfe"))
+VPSDB_JSON_PATH = CONFIG_DIR / 'vpsdb.json'
 VPINFE_INI_PATH = CONFIG_DIR / 'vpinfe.ini'
 COLLECTIONS_PATH = CONFIG_DIR / 'collections.ini'
 
@@ -213,7 +213,7 @@ def save_upload_bytes(dest_file: Path, content: bytes) -> None:
 
 # --- helper to create meta.ini with a chosen VPS record for ONE folder ---
 
-def associate_vps_to_folder(table_folder: Path, vps_entry: Dict, download_media: bool = False) -> None:
+def associate_vps_to_folder(table_folder: Path, vps_entry: Dict, download_media: bool = False, user_media: bool = False) -> None:
     """
     Creates meta.ini inside `table_folder` using the selected vps_entry and the VPX metadata.
     """
@@ -248,16 +248,27 @@ def associate_vps_to_folder(table_folder: Path, vps_entry: Dict, download_media:
     meta = MetaConfig(str(meta_path))
     meta.writeConfigMeta(finalini)
 
-    if download_media:
-        from common.vpsdb import VPSdb      # your VPSdb wrapper that has downloadMediaForTable
+    if user_media:
+        # First, claim any existing local media as user-sourced
+        from clioptions import _claimMediaForTable
+        from common.table import Table
+        tabletype = _INI_CFG.config['Media'].get('tabletype', 'table').lower()
+        pseudo = Table()
+        pseudo.tableDirName = table_folder.name
+        pseudo.fullPathTable = str(table_folder)
+        _claimMediaForTable(pseudo, tabletype)
+        # Re-read meta so downloadMediaForTable sees the freshly claimed user entries
+        meta = MetaConfig(str(meta_path))
+
+    if download_media or user_media:
+        # Download missing media from vpinmediadb (skips user-sourced entries)
+        from common.vpsdb import VPSdb
         vps = VPSdb(_INI_CFG.config['Settings']['tablerootdir'], _INI_CFG)
-        # Build a lightweight Table-like object with all attributes needed by downloadMediaForTable
         class _LightTable:
             def __init__(self, folder: Path, vpx: Path):
                 self.tableDirName = folder.name
                 self.fullPathTable = str(folder)
                 self.fullPathVPXfile = str(vpx)
-                # Media paths - set to None so downloadMediaForTable uses defaults
                 self.BGImagePath = None
                 self.DMDImagePath = None
                 self.TableImagePath = None
@@ -269,8 +280,13 @@ def associate_vps_to_folder(table_folder: Path, vps_entry: Dict, download_media:
                 self.TableVideoPath = None
                 self.BGVideoPath = None
                 self.DMDVideoPath = None
+                self.AudioPath = None
         pseudo_table = _LightTable(table_folder, vpx_file)
         vps.downloadMediaForTable(pseudo_table, vps_entry.get('id'), metaConfig=meta)
+
+    # Invalidate the media page cache so next visit shows fresh data
+    from managerui.pages.media import invalidate_media_cache
+    invalidate_media_cache()
 
 
 logger = logging.getLogger("tables")
@@ -612,7 +628,7 @@ def render_panel(tab=None):
                     ui.label('Reparse all tables, even if .info already exists').classes('text-xs text-grey q-ml-lg')
 
                     download_media_switch = ui.switch('Download Media', value=True).classes('text-sm')
-                    ui.label('Automatically download table images and media from VPSdb').classes('text-xs text-grey q-ml-lg')
+                    ui.label('Automatically download table images and media from VPinMediaDB').classes('text-xs text-grey q-ml-lg')
 
                 # Progress section (shown during build)
                 progress_container = ui.column().classes('w-full gap-2')
@@ -705,6 +721,10 @@ def render_panel(tab=None):
                         with log_container:
                             for m in dialog_state['log_messages']:
                                 ui.label(m).classes("text-white text-xs whitespace-pre-wrap")
+
+                        # Invalidate media cache so media page shows fresh data
+                        from managerui.pages.media import invalidate_media_cache
+                        invalidate_media_cache()
 
                         # Refresh table list after completion
                         await perform_scan(silent=True)
@@ -842,6 +862,10 @@ def render_panel(tab=None):
                         dlg.open()
 
                     patch_btn.on_click(open_patch_dialog)
+
+                    import_btn = ui.button("Import Table", icon="upload").props("color=accent rounded")
+
+                    import_btn.on_click(lambda: open_import_table_dialog(perform_scan))
 
         # Use cached data if available, otherwise start with empty
         initial_rows = _tables_cache if _tables_cache is not None else []
@@ -1322,12 +1346,53 @@ def open_table_dialog(row_data: dict, on_close: Optional[Callable[[], None]] = N
         # Header
         with ui.row().classes('table-dialog-header w-full items-center gap-3'):
             ui.icon('casino', size='32px').classes('text-white')
-            with ui.column().classes('gap-0'):
+            with ui.column().classes('gap-0 flex-grow'):
                 ui.label(table_name).classes('text-xl font-bold text-white')
                 manufacturer = row_data.get('manufacturer', '')
                 year = row_data.get('year', '')
                 if manufacturer or year:
                     ui.label(f'{manufacturer} {year}'.strip()).classes('text-sm text-blue-200')
+            # Rebuild metadata button - anchored to the right
+            table_dir_name = os.path.basename(row_data.get('table_path', ''))
+            if table_dir_name:
+                rebuild_btn = ui.button('Rebuild Meta', icon='refresh').props('color=white text-color=primary rounded dense').classes('ml-auto')
+                rebuild_status = ui.label('').classes('text-xs text-white ml-2')
+                rebuild_status.visible = False
+                rebuild_client = context.client
+
+                async def on_rebuild_meta():
+                    client = rebuild_client
+                    with client:
+                        rebuild_btn.disable()
+                        rebuild_status.visible = True
+                        rebuild_status.set_text('Rebuilding...')
+                    try:
+                        result = await run.io_bound(
+                            buildMetaData,
+                            downloadMedia=True,
+                            updateAll=True,
+                            tableName=table_dir_name,
+                        )
+                        with client:
+                            not_found = result.get('not_found', 0)
+                            if not_found > 0:
+                                rebuild_status.set_text('Not found in VPS')
+                                ui.notify('Table not found in VPSdb', type='warning')
+                            else:
+                                rebuild_status.visible = False
+                                ui.notify('Metadata rebuilt successfully', type='positive')
+                            # Invalidate media cache so media page shows fresh data
+                            from managerui.pages.media import invalidate_media_cache
+                            invalidate_media_cache()
+                    except Exception as ex:
+                        with client:
+                            rebuild_status.set_text('Error')
+                            ui.notify(f'Rebuild failed: {ex}', type='negative')
+                    finally:
+                        with client:
+                            rebuild_btn.enable()
+
+                rebuild_btn.on_click(lambda: asyncio.create_task(on_rebuild_meta()))
 
         # Main info section
         with ui.column().classes('w-full gap-4 p-4'):
@@ -1342,7 +1407,7 @@ def open_table_dialog(row_data: dict, on_close: Optional[Callable[[], None]] = N
                     ('rom', 'ROM', 'memory'),
                     ('version', 'Version', 'tag'),
                     ('type', 'Type', 'category'),
-                    ('table_path', 'Path', 'folder'),
+                    ('table_path', 'Folder', 'folder'),
                 ]
                 # List fields that need special handling (join with comma)
                 list_fields = [
@@ -1359,10 +1424,11 @@ def open_table_dialog(row_data: dict, on_close: Optional[Callable[[], None]] = N
                     for key, label, icon in display_fields:
                         value = row_data.get(key, '')
                         if value:  # Only show non-empty fields
+                            display_value = os.path.basename(value) if key == 'table_path' else str(value)
                             with ui.row().classes('detail-row items-center gap-2 w-full'):
                                 ui.icon(icon, size='18px').classes('text-blue-400')
                                 ui.label(label).classes('detail-label')
-                                ui.label(str(value)).classes('detail-value')
+                                ui.label(display_value).classes('detail-value')
 
                     # Render list fields (authors, themes) - join lists with comma
                     for key, label, icon in list_fields:
@@ -1591,7 +1657,7 @@ def open_table_dialog(row_data: dict, on_close: Optional[Callable[[], None]] = N
                         with ui.row().classes('items-center gap-3'):
                             ui.icon('music_note', size='24px').classes('text-green-400')
                             with ui.column().classes('gap-0'):
-                                ui.label('Serum (AltSound)').classes('font-medium text-white')
+                                ui.label('AltSound').classes('font-medium text-white')
                                 ui.label('Upload sound pack files (requires ROM)').classes('text-xs text-gray-400')
                         def on_altsound_upload(e):
                             if not rom_name:
@@ -1627,6 +1693,13 @@ def open_missing_tables_dialog(missing_rows: list[dict], on_close: Optional[Call
         title = ui.label(f'Missing Tables ({len(missing_rows)})').classes('text-lg font-bold')
         ui.separator()
 
+        # User media toggle - applies to all associations from this dialog
+        use_own_media = ui.switch('Use my own media').props('color=orange').classes('q-mt-xs')
+        ui.label(
+            'When enabled, existing media files in the table folder will be claimed as user-sourced '
+            'instead of downloading from VPinMediaDB. Missing media types will still be downloaded on the next --buildmeta run.'
+        ).classes('text-xs text-gray-400 q-ml-lg').style('margin-top: -4px;')
+
         container = ui.column().classes('w-full')
 
         def render(items: list[dict]):
@@ -1645,6 +1718,7 @@ def open_missing_tables_dialog(missing_rows: list[dict], on_close: Optional[Call
                             rr,
                             refresh_missing=lambda: (ui.notify('Missing list updated', type='info'), render(scan_missing_tables())),
                             refresh_installed=None,
+                            use_own_media_switch=use_own_media,
                         )
                     ).props('color=primary outline')
 
@@ -1661,15 +1735,352 @@ def open_missing_tables_dialog(missing_rows: list[dict], on_close: Optional[Call
             ui.button('Close', on_click=_close)
     dlg.open()
 
+def open_import_table_dialog(perform_scan_cb=None):
+    """Top-level dialog for importing a new table with associated files."""
+    dlg = ui.dialog().props('persistent max-width=900px')
+    import_state = {
+        'vps_entry': None,
+        'vpx_file': None,       # (name, bytes)
+        'directb2s_file': None,  # (name, bytes)
+        'rom_file': None,        # (name, bytes)
+        'puppack_zip': None,     # (name, bytes)
+        'music_zip': None,       # (name, bytes)
+        'busy': False,
+        'client': context.client,
+    }
+
+    def update_import_btn_state():
+        can_import = import_state['vps_entry'] is not None and import_state['vpx_file'] is not None
+        if can_import:
+            do_import_btn.enable()
+        else:
+            do_import_btn.disable()
+
+    with dlg, ui.card().classes('w-[850px] max-w-[95vw]').style(
+        'position: relative; max-height: 90vh; overflow-y: auto;'
+    ):
+        ui.label('Import Table').classes('text-xl font-bold text-white')
+        ui.separator()
+
+        # --- Step 1: VPS Search & Selection ---
+        ui.label('Step 1: Associate with VPS Database').classes('text-md font-semibold text-blue-300')
+
+        with ui.row().classes('w-full items-center gap-3'):
+            selected_label = ui.label('No table selected').classes('text-sm text-gray-400')
+
+            def open_vps_search_dialog():
+                """Open a separate dialog to search and select a VPS entry."""
+                search_dlg = ui.dialog().props('max-width=1080px')
+
+                with search_dlg, ui.card().classes('w-[960px] max-w-[95vw]').style('position: relative; overflow: hidden;'):
+                    ui.label('Search VPS Database').classes('text-lg font-bold')
+                    ui.separator()
+
+                    results_container = ui.column().classes('gap-1 w-full q-mt-sm').style('max-height: 55vh; overflow: auto;')
+
+                    def render_results(items: List[Dict]):
+                        results_container.clear()
+                        if not items:
+                            with results_container:
+                                ui.label('Search by Table Name').classes('text-sm text-gray-500')
+                            return
+                        for it in items:
+                            name = it.get('name', '')
+                            manuf = it.get('manufacturer') or it.get('mfg') or ''
+                            year = it.get('year') or ''
+                            vid = it.get('id') or ''
+                            with results_container:
+                                with ui.row().classes('items-center w-full q-py-xs border-b gap-2').style('flex-wrap: nowrap;'):
+                                    ui.label(f"{name} — {manuf} — {year} (ID: {vid})").classes('text-sm').style(
+                                        'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'
+                                    )
+
+                                    def _on_pick(it=it):
+                                        import_state['vps_entry'] = it
+                                        sel_name = it.get('name', '')
+                                        sel_manuf = it.get('manufacturer') or it.get('mfg') or ''
+                                        sel_year = it.get('year') or ''
+                                        display = f"{sel_name} ({sel_manuf} {sel_year})".strip()
+                                        selected_label.set_text(f'✓ {display}')
+                                        selected_label.classes(remove='text-gray-400', add='text-green-400 font-semibold')
+                                        update_import_btn_state()
+                                        search_dlg.close()
+
+                                    ui.button('Select', on_click=_on_pick).props('color=primary').style('flex-shrink: 0;')
+
+                    search_input = ui.input('Search VPS…', value='').classes('w-full')
+
+                    def on_search_change(e: events.ValueChangeEventArguments):
+                        term = e.value or ''
+                        render_results(search_vpsdb(term, limit=80))
+
+                    search_input.on_value_change(on_search_change)
+                    render_results([])
+
+                    with ui.row().classes('justify-end q-mt-md'):
+                        ui.button('Close', on_click=search_dlg.close)
+
+                search_dlg.open()
+
+            ui.button('Search VPS…', icon='search', on_click=open_vps_search_dialog).props('color=primary')
+
+        ui.separator().classes('q-mt-sm')
+
+        # --- Step 2: File Uploads ---
+        ui.label('Step 2: Upload Files').classes('text-md font-semibold text-blue-300 q-mt-sm')
+
+        # VPX file (required)
+        with ui.row().classes('w-full items-center gap-3'):
+            ui.label('Table File (.vpx) *').classes('text-sm text-white').style('min-width: 160px;')
+            vpx_status = ui.label('No file selected').classes('text-xs text-gray-400')
+
+        async def on_vpx_upload(e: events.UploadEventArguments):
+            data = await e.file.read()
+            import_state['vpx_file'] = (e.file.name, data)
+            vpx_status.set_text(f'✓ {e.file.name}')
+            vpx_status.classes(remove='text-gray-400', add='text-green-400')
+            update_import_btn_state()
+
+        ui.upload(
+            on_upload=on_vpx_upload,
+            auto_upload=True,
+            max_files=1,
+        ).props('accept=".vpx" flat bordered').classes('w-full').style(
+            'background: #0f172a; border: 1px dashed #475569;'
+        )
+
+        # DirectB2S file (optional)
+        with ui.row().classes('w-full items-center gap-3 q-mt-sm'):
+            ui.label('Backglass (.directb2s)').classes('text-sm text-white').style('min-width: 160px;')
+            b2s_status = ui.label('No file selected').classes('text-xs text-gray-400')
+
+        async def on_b2s_upload(e: events.UploadEventArguments):
+            data = await e.file.read()
+            import_state['directb2s_file'] = (e.file.name, data)
+            b2s_status.set_text(f'✓ {e.file.name}')
+            b2s_status.classes(remove='text-gray-400', add='text-green-400')
+
+        ui.upload(
+            on_upload=on_b2s_upload,
+            auto_upload=True,
+            max_files=1,
+        ).props('accept=".directb2s" flat bordered').classes('w-full').style(
+            'background: #0f172a; border: 1px dashed #475569;'
+        )
+
+        # PinMAME ROM (optional)
+        with ui.row().classes('w-full items-center gap-3 q-mt-sm'):
+            ui.label('PinMAME ROM (.zip)').classes('text-sm text-white').style('min-width: 160px;')
+            rom_status = ui.label('No file selected').classes('text-xs text-gray-400')
+
+        async def on_rom_upload(e: events.UploadEventArguments):
+            data = await e.file.read()
+            import_state['rom_file'] = (e.file.name, data)
+            rom_status.set_text(f'✓ {e.file.name}')
+            rom_status.classes(remove='text-gray-400', add='text-green-400')
+
+        ui.upload(
+            on_upload=on_rom_upload,
+            auto_upload=True,
+            max_files=1,
+        ).props('accept=".zip" flat bordered').classes('w-full').style(
+            'background: #0f172a; border: 1px dashed #475569;'
+        )
+
+        # PUP Pack (.zip)
+        with ui.row().classes('w-full items-center gap-3 q-mt-sm'):
+            ui.label('PUP Pack (.zip)').classes('text-sm text-white').style('min-width: 160px;')
+            pup_status = ui.label('No file selected').classes('text-xs text-gray-400')
+
+        async def on_pup_upload(e: events.UploadEventArguments):
+            data = await e.file.read()
+            import_state['puppack_zip'] = (e.file.name, data)
+            pup_status.set_text(f'✓ {e.file.name}')
+            pup_status.classes(remove='text-gray-400', add='text-green-400')
+
+        ui.upload(
+            on_upload=on_pup_upload,
+            auto_upload=True,
+            max_files=1,
+        ).props('accept=".zip" flat bordered').classes('w-full').style(
+            'background: #0f172a; border: 1px dashed #475569;'
+        )
+
+        # Music (.zip)
+        with ui.row().classes('w-full items-center gap-3 q-mt-sm'):
+            ui.label('Music (.zip)').classes('text-sm text-white').style('min-width: 160px;')
+            music_status = ui.label('No file selected').classes('text-xs text-gray-400')
+
+        async def on_music_upload(e: events.UploadEventArguments):
+            data = await e.file.read()
+            import_state['music_zip'] = (e.file.name, data)
+            music_status.set_text(f'✓ {e.file.name}')
+            music_status.classes(remove='text-gray-400', add='text-green-400')
+
+        ui.upload(
+            on_upload=on_music_upload,
+            auto_upload=True,
+            max_files=1,
+        ).props('accept=".zip" flat bordered').classes('w-full').style(
+            'background: #0f172a; border: 1px dashed #475569;'
+        )
+
+        # Loading overlay (over entire card)
+        import_loading_overlay = ui.element('div').style(
+            'position: absolute; top: 0; left: 0; right: 0; bottom: 0; '
+            'background: rgba(15, 23, 42, 0.95); z-index: 1000; '
+            'display: none; flex-direction: column; align-items: center; justify-content: center;'
+        )
+        with import_loading_overlay:
+            with ui.column().classes('items-center justify-center gap-4 w-full'):
+                ui.spinner('dots', size='xl', color='blue')
+                import_loading_label = ui.label('Importing table...').classes('text-white text-lg text-center')
+
+        ui.separator()
+
+        # --- Buttons ---
+        with ui.row().classes('justify-end gap-2 q-mt-sm w-full'):
+            ui.button('Cancel', on_click=dlg.close).props('flat').classes('text-slate-400')
+            do_import_btn = ui.button('Import', icon='upload').props('color=primary')
+            do_import_btn.disable()
+
+        async def do_import():
+            if import_state['busy']:
+                return
+            if not import_state['vps_entry'] or not import_state['vpx_file']:
+                ui.notify('Please select a VPS entry and upload a .vpx file', type='warning')
+                return
+
+            import_state['busy'] = True
+            client = import_state['client']
+
+            with client:
+                import_loading_overlay.style(add='display: flex;', remove='display: none;')
+                import_loading_label.set_text('Creating table folder...')
+                do_import_btn.disable()
+
+            try:
+                vps_entry = import_state['vps_entry']
+                # Build folder name
+                name = vps_entry.get('name', '')
+                mfg = vps_entry.get('manufacturer') or vps_entry.get('mfg') or ''
+                year = vps_entry.get('year') or ''
+                if mfg and year:
+                    folder_name = f"{name} ({mfg} {year})"
+                elif mfg:
+                    folder_name = f"{name} ({mfg})"
+                elif year:
+                    folder_name = f"{name} ({year})"
+                else:
+                    folder_name = name
+                # Sanitize
+                folder_name = "".join(c for c in folder_name if c not in '<>:"/\\|?*')
+
+                table_root = get_tables_path()
+                table_dir = Path(table_root) / folder_name
+
+                if table_dir.exists():
+                    with client:
+                        ui.notify(f'Folder already exists: {folder_name}', type='negative')
+                        import_loading_overlay.style(add='display: none;', remove='display: flex;')
+                        do_import_btn.enable()
+                    import_state['busy'] = False
+                    return
+
+                # Create folder
+                ensure_dir(table_dir)
+
+                # Write VPX file
+                with client:
+                    import_loading_label.set_text('Copying table file...')
+                vpx_name, vpx_bytes = import_state['vpx_file']
+                await run.io_bound(save_upload_bytes, table_dir / vpx_name, vpx_bytes)
+
+                # Write directb2s if provided
+                if import_state['directb2s_file']:
+                    with client:
+                        import_loading_label.set_text('Copying backglass file...')
+                    b2s_name, b2s_bytes = import_state['directb2s_file']
+                    await run.io_bound(save_upload_bytes, table_dir / b2s_name, b2s_bytes)
+
+                # Write ROM if provided
+                if import_state['rom_file']:
+                    with client:
+                        import_loading_label.set_text('Copying PinMAME ROM...')
+                    rom_name, rom_bytes = import_state['rom_file']
+                    await run.io_bound(save_upload_bytes, table_dir / 'pinmame' / 'roms' / rom_name, rom_bytes)
+
+                # Extract PUP Pack zip if provided
+                if import_state['puppack_zip']:
+                    with client:
+                        import_loading_label.set_text('Extracting PUP Pack...')
+                    pup_name, pup_bytes = import_state['puppack_zip']
+                    dest = table_dir / 'pupvideos'
+                    ensure_dir(dest)
+                    await run.io_bound(lambda: zipfile.ZipFile(io.BytesIO(pup_bytes)).extractall(dest))
+
+                # Extract music zip if provided
+                if import_state['music_zip']:
+                    with client:
+                        import_loading_label.set_text('Extracting music...')
+                    mus_name, mus_bytes = import_state['music_zip']
+                    dest = table_dir / 'music'
+                    ensure_dir(dest)
+                    await run.io_bound(lambda: zipfile.ZipFile(io.BytesIO(mus_bytes)).extractall(dest))
+
+                # Create metadata and download media
+                with client:
+                    import_loading_label.set_text('Creating metadata and downloading media...')
+                await run.io_bound(associate_vps_to_folder, table_dir, vps_entry, True)
+
+                # Rebuild metadata (same as "Rebuild Meta" button in table detail)
+                table_dir_name = table_dir.name
+                with client:
+                    import_loading_label.set_text('Rebuilding metadata...')
+                await run.io_bound(
+                    buildMetaData,
+                    downloadMedia=True,
+                    updateAll=True,
+                    tableName=table_dir_name,
+                )
+
+                # Invalidate media cache
+                from managerui.pages.media import invalidate_media_cache
+                invalidate_media_cache()
+
+                with client:
+                    ui.notify(f'Table imported successfully: {folder_name}', type='positive')
+                dlg.close()
+
+                # Refresh table list
+                if callable(perform_scan_cb):
+                    await perform_scan_cb(silent=True)
+
+            except Exception as ex:
+                logger.exception('Table import failed')
+                with client:
+                    ui.notify(f'Import failed: {ex}', type='negative')
+                    import_loading_overlay.style(add='display: none;', remove='display: flex;')
+                    do_import_btn.enable()
+            finally:
+                import_state['busy'] = False
+
+        do_import_btn.on_click(lambda: asyncio.create_task(do_import()))
+
+    dlg.open()
+
+
 def open_match_vps_dialog(
     missing_row: dict,
     refresh_missing: Optional[Callable[[], None]] = None,
     refresh_installed: Optional[Callable[[], None]] = None,
+    use_own_media_switch=None,
     ):
     """
     missing_row: {'folder': '<name>', 'path': '<abs path>'}
     refresh_missing: callback to refresh the missing list/count after success
     refresh_installed: callback to refresh the installed tables list after success
+    use_own_media_switch: optional NiceGUI switch element from the parent dialog
     """
     dlg = ui.dialog().props('max-width=1080px persistent')
     dialog_state = {'busy': False}
@@ -1754,11 +2165,18 @@ def open_match_vps_dialog(
                                 else:
                                     folder_path = old_path
 
-                                # Update loading message and run download in background
-                                loading_label.set_text('Creating metadata and downloading media...')
-                                await run.io_bound(associate_vps_to_folder, folder_path, it, True)
+                                # Update loading message and run association in background
+                                own_media = use_own_media_switch.value if use_own_media_switch else False
+                                if own_media:
+                                    loading_label.set_text('Creating metadata and claiming user media...')
+                                else:
+                                    loading_label.set_text('Creating metadata and downloading media...')
+                                await run.io_bound(associate_vps_to_folder, folder_path, it, not own_media, own_media)
 
-                                ui.notify(f"Associated with VPS ID '{vid}' and downloaded media", type='positive')
+                                if own_media:
+                                    ui.notify(f"Associated with VPS ID '{vid}' and claimed user media", type='positive')
+                                else:
+                                    ui.notify(f"Associated with VPS ID '{vid}' and downloaded media", type='positive')
                                 dlg.close()
                                 if callable(refresh_missing):
                                     refresh_missing()

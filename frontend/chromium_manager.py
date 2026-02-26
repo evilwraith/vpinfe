@@ -8,6 +8,8 @@ positioned on the correct monitor with fullscreen.
 
 import os
 import sys
+from shutil import which
+from collections import namedtuple
 import platform
 import subprocess
 import tempfile
@@ -32,13 +34,67 @@ def get_chromium_path():
     system = platform.system()
 
     if system == "Windows":
+        # Check common system Chrome/Chromium install paths first
+        common_paths = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Chromium\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Chromium\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe")
+        ]
+        for path in common_paths:
+            if os.path.isfile(path):
+                return path
         return resource_path("chromium/windows/chrome-win/chrome.exe")
     elif system == "Darwin":
+        # Check common system Chrome/Chromium install paths first
+        common_paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            os.path.expanduser("~/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+        for path in common_paths:
+            if os.path.isfile(path):
+                return path
         return resource_path("chromium/Chromium.app/Contents/MacOS/Chromium")
     elif system == "Linux":
+        # Check if chromium is locally available on the system. 
+        # If so use that instead of bundled chromium.
+        if which("chromium") is not None:
+            return which("chromium")
         return resource_path("chromium/linux/chrome/chrome")
     else:
         raise RuntimeError(f"Unsupported OS: {system}")
+
+
+MonitorInfo = namedtuple('MonitorInfo', ['x', 'y', 'width', 'height'])
+
+
+def get_mac_screens():
+    """Get monitor info from NSScreen (macOS only).
+
+    screeninfo.get_monitors() reports coordinates that can mismatch what
+    Chromium expects on macOS.  NSScreen uses Cocoa's bottom-left origin
+    coordinate system, so we convert to top-left origin for Chromium's
+    --window-position flag.
+    """
+    import AppKit
+    screens = AppKit.NSScreen.screens()
+    # Total virtual height for bottom-left → top-left conversion
+    max_bottom = max(
+        s.frame().origin.y + s.frame().size.height for s in screens
+    )
+    result = []
+    for s in screens:
+        frame = s.frame()
+        x = int(frame.origin.x)
+        y = int(max_bottom - frame.origin.y - frame.size.height)
+        result.append(MonitorInfo(x=x, y=y,
+                                  width=int(frame.size.width),
+                                  height=int(frame.size.height)))
+    return result
 
 
 class ChromiumManager:
@@ -69,16 +125,14 @@ class ChromiumManager:
         env["GOOGLE_DEFAULT_CLIENT_ID"] = "no"
         env["GOOGLE_DEFAULT_CLIENT_SECRET"] = "no"
 
-        # Use --kiosk on Windows to avoid dual-window issue with --start-fullscreen
-        #fullscreen_flag = "--kiosk" if platform.system() == "Windows" else "--start-fullscreen"
-
-        fullscreen_flag = "--kiosk"
-
+        # macOS: requires "Displays have separate Spaces" enabled in
+        # System Settings > Desktop & Dock > Mission Control so that
+        # --kiosk fullscreen on one monitor doesn't black out others.
         args = [
             chrome_path,
             f"--app={url}",
             f"--window-name=vpinfe-{window_name}",
-            fullscreen_flag,
+            "--kiosk",
             f"--window-position={monitor.x},{monitor.y}",
             f"--window-size={monitor.width},{monitor.height}",
             f"--user-data-dir={user_data_dir}",
@@ -86,6 +140,9 @@ class ChromiumManager:
             "--disable-infobars",
             "--disable-session-crashed-bubble",
             "--disable-restore-session-state",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-default-apps",
             "--log-level=3",
             # Prevent throttling/freezing when window is not focused. This is
             # important for Linux when an external game takes focus and occludes
@@ -94,7 +151,7 @@ class ChromiumManager:
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
             "--disable-background-media-suspend",
-            "--disable-features=CalculateNativeWindowOcclusion",
+            "--disable-features=CalculateNativeWindowOcclusion,PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies",
             "--disable-hang-monitor",
             "--disable-ipc-flooding-protection",
             "--disable-gpu-process-crash-limit",
@@ -104,6 +161,8 @@ class ChromiumManager:
             "--no-sandbox",
             "--disable-gpu-sandbox",
             "--autoplay-policy=no-user-gesture-required",
+            # Suppress "unsupported command-line flag" info bar warnings
+            "--test-type",
         ]
 
         print(f"[Chromium] Launching '{window_name}' on monitor {index} "
@@ -126,9 +185,13 @@ class ChromiumManager:
             iniconfig: IniConfig instance with display and network settings
             base_url: Base URL for the HTTP server
         """
-        from screeninfo import get_monitors
-        monitors = get_monitors()
-        print(f"[Chromium] Detected {len(monitors)} monitors: {monitors}")
+        if sys.platform == "darwin":
+            monitors = get_mac_screens()
+            print(f"[Chromium] Detected {len(monitors)} macOS screens (via NSScreen): {monitors}")
+        else:
+            from screeninfo import get_monitors
+            monitors = get_monitors()
+            print(f"[Chromium] Detected {len(monitors)} monitors: {monitors}")
 
         theme_assets_port = int(iniconfig.config['Network'].get('themeassetsport', '8000'))
 
@@ -151,13 +214,52 @@ class ChromiumManager:
 
             monitor = monitors[screen_id]
             url = f"{base_url}:{theme_assets_port}/web/splash.html?window={window_name}"
+
+            # Brief delay before launching the table window to ensure bg/dmd
+            # are initialized first, so table gets focus as the last window
+            if window_name == 'table':
+                time.sleep(0.5)
+
             self.launch_window(window_name, url, monitor, screen_id)
 
         print(f"[Chromium] Launched {len(self._processes)} browser windows")
 
-        # Ensure the 'table' window gets focus for keyboard input (remote control)
-        if self.get_process('table'):
-            self._schedule_focus('table')
+        # macOS: ensure the table window gets focus after all windows launch
+        if sys.platform == "darwin":
+            threading.Thread(target=self._focus_table_window_mac, daemon=True).start()
+
+    def _focus_table_window_mac(self):
+        """macOS: ensure focus goes to the table window after launch."""
+        time.sleep(0.5)
+        try:
+            import AppKit
+            AppKit.NSApp.activateIgnoringOtherApps_(True)
+            for win_name, proc, _, _ in self._processes:
+                if win_name == 'table':
+                    print("[Chromium] macOS: activating app focus for table window")
+                    break
+        except Exception as e:
+            print(f"[Chromium] macOS focus activation failed: {e}")
+
+    def activate_all_mac(self):
+        """macOS: re-activate all Chromium windows after an external app (e.g. VPX) exits.
+
+        Called after VPX exits so Chromium kiosk windows return to the foreground
+        instead of staying hidden behind the desktop.
+        """
+        try:
+            import AppKit
+            our_pids = {proc.pid for _, proc, _, _ in self._processes}
+            activated = 0
+            for ns_app in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+                if ns_app.processIdentifier() in our_pids:
+                    ns_app.activateWithOptions_(
+                        AppKit.NSApplicationActivateIgnoringOtherApps
+                    )
+                    activated += 1
+            print(f"[Chromium] macOS: re-activated {activated} Chromium windows after VPX exit")
+        except Exception as e:
+            print(f"[Chromium] macOS re-activation failed: {e}")
 
     @staticmethod
     def _get_descendant_pids(pid):
@@ -175,8 +277,6 @@ class ChromiumManager:
 
     def _kill_process_tree(self, proc, window_name, force=False):
         """Kill a Chromium process and all its children (renderers, GPU, zygote)."""
-        sig = signal.SIGKILL if force else signal.SIGTERM
-
         if platform.system() == "Windows":
             # taskkill /T kills the entire process tree, /F forces it
             try:
@@ -189,6 +289,7 @@ class ChromiumManager:
         else:
             # Walk /proc to find ALL descendants (regardless of process group)
             # then kill children first, parent last
+            sig = signal.SIGKILL if force else signal.SIGTERM
             all_pids = self._get_descendant_pids(proc.pid)
             all_pids.append(proc.pid)
             print(f"[Chromium] Killing '{window_name}' tree: {all_pids} with signal {sig}")
@@ -248,122 +349,6 @@ class ChromiumManager:
 
         # Block the main thread until exit is signaled
         self._exit_event.wait()
-
-    def focus_window(self, window_name):
-        """Focus a specific Chromium window by name (platform-specific)."""
-        if window_name != 'table':
-            return False
-
-        proc = self.get_process(window_name)
-        if not proc or proc.poll() is not None:
-            print(f"[Chromium] Cannot focus '{window_name}': process not running")
-            return False
-
-        system = platform.system()
-        if system == "Linux":
-            return self._focus_window_linux(proc, window_name)
-        elif system == "Windows":
-            return self._focus_window_windows(proc, window_name)
-        elif system == "Darwin":
-            return self._focus_window_macos(proc, window_name)
-        return False
-
-    def _focus_window_linux(self, proc, window_name):
-        """Focus window on Linux by clicking on it (simulated input)."""
-        # Find the monitor for this window to get coordinates
-        monitor = None
-        for name, _, _, mon in self._processes:
-            if name == window_name:
-                monitor = mon
-                break
-
-        if not monitor:
-            print(f"[Chromium] Could not determine monitor for '{window_name}' to focus.")
-            return False
-
-        try:
-            from pynput.mouse import Button, Controller
-            mouse = Controller()
-            
-            # Calculate center of the monitor
-            center_x = monitor.x + (monitor.width // 2)
-            center_y = monitor.y + (monitor.height // 2)
-            
-            # Move to center and click to grab focus
-            mouse.position = (center_x, center_y)
-            time.sleep(0.05) 
-            mouse.click(Button.left, 1)
-            
-            # Move cursor out of the way (bottom right corner) to "hide" it
-            mouse.position = (monitor.x + monitor.width, monitor.y + monitor.height)
-            
-            print(f"[Chromium] Focused '{window_name}' via mouse click at {center_x},{center_y}")
-            return True
-        except ImportError:
-            print("[Chromium] pynput not found - cannot focus window without xdotool or pynput")
-        except Exception as e:
-            print(f"[Chromium] Focus failed for '{window_name}': {e}")
-        return False
-
-    def _focus_window_windows(self, proc, window_name):
-        """Focus window on Windows using ctypes."""
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            user32 = ctypes.windll.user32
-            target_hwnd = None
-
-            # Callback to find a visible window owned by the Chromium process
-            def enum_callback(hwnd, _lparam):
-                nonlocal target_hwnd
-                pid = ctypes.c_ulong()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value == proc.pid and user32.IsWindowVisible(hwnd):
-                    target_hwnd = hwnd
-                    return False  # Stop enumeration
-                return True
-
-            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-            user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
-
-            if target_hwnd:
-                user32.SetForegroundWindow(target_hwnd)
-                print(f"[Chromium] Focused '{window_name}' (HWND: {target_hwnd})")
-                return True
-            else:
-                print(f"[Chromium] No window found for '{window_name}' (PID: {proc.pid})")
-        except Exception as e:
-            print(f"[Chromium] Focus failed for '{window_name}': {e}")
-        return False
-
-    def _focus_window_macos(self, proc, window_name):
-        """Focus window on macOS using AppleScript."""
-        try:
-            subprocess.run(
-                ['osascript', '-e',
-                 f'tell application "System Events" to set frontmost of '
-                 f'(first process whose unix id is {proc.pid}) to true'],
-                capture_output=True, timeout=5
-            )
-            print(f"[Chromium] Focused '{window_name}' (PID: {proc.pid})")
-            return True
-        except Exception as e:
-            print(f"[Chromium] Focus failed for '{window_name}': {e}")
-        return False
-
-    def _schedule_focus(self, window_name, delay=3):
-        """Schedule focusing a window after a delay (background thread)."""
-        def _do_focus():
-            time.sleep(delay)
-            # Retry a few times in case the window hasn't appeared yet
-            for attempt in range(3):
-                if self.focus_window(window_name):
-                    return
-                time.sleep(1)
-            print(f"[Chromium] Failed to focus '{window_name}' after retries")
-
-        threading.Thread(target=_do_focus, daemon=True).start()
 
     def get_process(self, window_name):
         """Get the process for a specific window."""

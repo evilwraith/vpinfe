@@ -15,11 +15,11 @@ from platformdirs import user_config_dir
 class API:
 
     def __init__(self, iniConfig, window_name=None, ws_bridge=None, chromium_manager=None):
-        self.iniConfig = iniConfig
+        self._iniConfig = iniConfig
         self.window_name = window_name          # 'bg', 'dmd', or 'table'
         self.ws_bridge = ws_bridge              # WebSocketBridge instance
         self.chromium_manager = chromium_manager  # ChromiumManager instance
-        self.allTables = TableParser(self.iniConfig.config['Settings']['tablerootdir'], self.iniConfig).getAllTables()
+        self.allTables = TableParser(self._iniConfig.config['Settings']['tablerootdir'], self._iniConfig).getAllTables()
         self.filteredTables = self.allTables
         self.jsTableDictData = None
         # Track current filter state
@@ -35,7 +35,7 @@ class API:
         # Track current collection
         self.current_collection = None
         # Check for startup collection
-        startup_collection = self.iniConfig.config['Settings'].get('startup_collection', '').strip()
+        startup_collection = self._iniConfig.config['Settings'].get('startup_collection', '').strip()
         if startup_collection:
             try:
                 self.set_tables_by_collection(startup_collection)
@@ -57,6 +57,11 @@ class API:
     def playSound(self, sound):
         if self.ws_bridge:
             self.ws_bridge.send_event(self.window_name, {"type": "playSound", "sound": sound})
+
+    def trigger_audio_play(self):
+        """Fallback for pywebview autoplay bypass. In Chromium mode this is a
+        no-op because --autoplay-policy already allows direct audio.play()."""
+        pass
 
     def get_my_window_name(self):
         return self.window_name or "unknown"
@@ -127,6 +132,7 @@ class API:
                 "TableVideoPath": table.TableVideoPath,
                 "BGVideoPath": table.BGVideoPath,
                 "DMDVideoPath": table.DMDVideoPath,
+                "AudioPath": table.AudioPath,
                 "pupPackExists": table.pupPackExists,
                 "altColorExists": table.altColorExists,
                 "altSoundExists": table.altSoundExists,
@@ -314,15 +320,15 @@ class API:
 
     def get_joymaping(self):
         return {
-            'joyleft': self.iniConfig.config['Input'].get('joyleft', '0'),
-            'joyright': self.iniConfig.config['Input'].get('joyright', '0'),
-            'joyup': self.iniConfig.config['Input'].get('joyup', '0'),
-            'joydown': self.iniConfig.config['Input'].get('joydown', '0'),
-            'joyselect': self.iniConfig.config['Input'].get('joyselect', '0'),
-            'joymenu': self.iniConfig.config['Input'].get('joymenu', '0'),
-            'joyback': self.iniConfig.config['Input'].get('joyback', '0'),
-            'joyexit': self.iniConfig.config['Input'].get('joyexit', '0'),
-            'joycollectionmenu': self.iniConfig.config['Input'].get('joycollectionmenu', '0')
+            'joyleft': self._iniConfig.config['Input'].get('joyleft', '0'),
+            'joyright': self._iniConfig.config['Input'].get('joyright', '0'),
+            'joyup': self._iniConfig.config['Input'].get('joyup', '0'),
+            'joydown': self._iniConfig.config['Input'].get('joydown', '0'),
+            'joyselect': self._iniConfig.config['Input'].get('joyselect', '0'),
+            'joymenu': self._iniConfig.config['Input'].get('joymenu', '0'),
+            'joyback': self._iniConfig.config['Input'].get('joyback', '0'),
+            'joyexit': self._iniConfig.config['Input'].get('joyexit', '0'),
+            'joycollectionmenu': self._iniConfig.config['Input'].get('joycollectionmenu', '0')
         }
 
     def set_button_mapping(self, button_name, button_index):
@@ -337,9 +343,9 @@ class API:
 
         try:
             # Set the value in the config
-            self.iniConfig.config.set('Input', button_name, str(button_index))
+            self._iniConfig.config.set('Input', button_name, str(button_index))
             # Save to file
-            self.iniConfig.save()
+            self._iniConfig.save()
             return {"success": True, "message": f"Mapped {button_name} to button {button_index}"}
         except Exception as e:
             return {"success": False, "message": f"Error saving mapping: {str(e)}"}
@@ -347,23 +353,43 @@ class API:
     def launch_table(self, index):
         table = self.filteredTables[index]
         vpx = table.fullPathVPXfile
-        vpxbin = self.iniConfig.config['Settings'].get('vpxbinpath', '')
+        vpxbin = self._iniConfig.config['Settings'].get('vpxbinpath', '')
+         
+        vpxbin_path = Path(vpxbin).expanduser()
+        
+        # If on macOS and the target is an App bundle, dynamically route to its internal executable
+        if sys.platform == "darwin" and vpxbin_path.suffix.lower() == ".app":
+            # .stem gets the file name without the extension (e.g., 'VPinballX_GL')
+            app_name = vpxbin_path.stem
+            vpxbin_path = vpxbin_path / "Contents" / "MacOS" / app_name
         print("Launching: ", [vpxbin, "-play", vpx])
 
         # Track the table play
         self._track_table_play(table)
 
-        cmd = [Path(vpxbin).expanduser(), "-play", vpx]
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL)
+        cmd = [vpxbin_path, "-play", vpx]
+
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True)
+
+        startup_detected = False
+        for line in process.stdout:
+            if not startup_detected and "Startup done" in line:
+                startup_detected = True
+                self.send_event_all_windows_incself({"type": "TableRunning"})
+                print("table running")
+
         process.wait()
 
-        # After the game exits, schedule a refocus of the main 'table' window.
-        # This helps ensure the frontend is responsive again, especially on Linux
-        # where focus might not be returned automatically.
-        if self.chromium_manager:
-            self.chromium_manager._schedule_focus('table', delay=1)
+        # macOS: re-activate Chromium windows so they return to foreground
+        # after VPX exits (kiosk windows don't auto-regain focus on macOS)
+        if sys.platform == "darwin" and self.chromium_manager:
+            self.chromium_manager.activate_all_mac()
+
+        # Delete NVRAM file if configured for this table
+        self._delete_nvram_if_configured(table)
 
         self.send_event_all_windows_incself({"type": "TableLaunchComplete"})
 
@@ -399,6 +425,31 @@ class API:
 
         print(f"Tracked table play: {vpsid} (now {len(last_played_ids)} in Last Played)")
 
+    def _delete_nvram_if_configured(self, table):
+        """Delete the NVRAM .nv file if deletedNVRamOnClose is enabled for this table."""
+        meta = table.metaConfig or {}
+        if isinstance(meta, dict):
+            config = meta
+        elif hasattr(meta, "getConfig"):
+            config = meta.getConfig()
+        else:
+            return
+
+        vpinfe = config.get("VPinFE", {})
+        if not vpinfe.get("deletedNVRamOnClose", False):
+            return
+
+        rom = config.get("Info", {}).get("Rom", "")
+        if not rom:
+            print(f"[NVRAM] No ROM name found for table, skipping NVRAM deletion")
+            return
+
+        nvram_path = Path(table.fullPathTable) / "pinmame" / "nvram" / f"{rom}.nv"
+        if nvram_path.exists():
+            nvram_path.unlink()
+            print(f"[NVRAM] Deleted NVRAM file: {nvram_path}")
+        else:
+            print(f"[NVRAM] NVRAM file not found (nothing to delete): {nvram_path}")
 
     def build_metadata(self, download_media=True, update_all=False):
         """
@@ -452,7 +503,7 @@ class API:
                     'result': result
                 })
                 # Refresh table list after completion
-                self.allTables = TableParser(self.iniConfig.config['Settings']['tablerootdir'], self.iniConfig).getAllTables()
+                self.allTables = TableParser(self._iniConfig.config['Settings']['tablerootdir'], self._iniConfig).getAllTables()
                 self.filteredTables = self.allTables
             except Exception as e:
                 # Queue error event
@@ -528,10 +579,16 @@ class API:
     ###################
 
     def get_theme_name(self):
-        return self.iniConfig.config['Settings'].get('theme', 'default')
+        return self._iniConfig.config['Settings'].get('theme', 'default')
+
+    def get_table_orientation(self):
+        return self._iniConfig.config['Displays'].get('tableorientation', 'landscape')
+
+    def get_table_rotation(self):
+        return int(self._iniConfig.config['Displays'].get('tablerotation', '0'))
 
     def get_theme_assets_port(self):
-        return int(self.iniConfig.config['Network'].get('themeassetsport', '8000'))
+        return int(self._iniConfig.config['Network'].get('themeassetsport', '8000'))
 
     def get_theme_index_page(self):
         theme_name = self.get_theme_name()

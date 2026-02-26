@@ -9,6 +9,8 @@ from .pages import collections as tab_collections
 from .pages import media as tab_media
 from .pages import themes as tab_themes
 from .pages import remote
+from .pages.remote import _restart_app, _quit_app
+from .pages import mobile as tab_mobile
 import threading
 import subprocess
 import urllib.request
@@ -16,6 +18,17 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import os
 import json
+
+# Shutdown event — set by _quit_app() to unblock headless mode
+import threading as _threading
+_shutdown_event = _threading.Event()
+
+# First-run flag — set by main.py when no vpinfe.ini existed
+_first_run = False
+
+def set_first_run(value: bool = True):
+    global _first_run
+    _first_run = value
 
 # Shared state for remote launch notifications
 _remote_launch_state = {
@@ -117,6 +130,12 @@ def header():
         with ui.row().classes('gap-3 items-center'):
             ui.icon('sports_esports', size='28px').classes('text-blue-400')
             ui.label('VPinFE Manager').classes('text-xl font-bold text-white')
+            ui.button(icon='restart_alt', on_click=lambda: _restart_app()) \
+                .props('flat round dense').classes('text-green-400') \
+                .tooltip('Restart VPinFE')
+            ui.button(icon='power_settings_new', on_click=lambda: _quit_app()) \
+                .props('flat round dense').classes('text-red-400') \
+                .tooltip('Quit VPinFE')
 
         # Update notification (right side of header)
         update_container = ui.row().classes('gap-2 items-center')
@@ -241,6 +260,12 @@ def build_app():
                 .style('justify-content: flex-start; padding: 12px 16px;')
                 .props('flat align=left')
             )
+            mobile_btn = (
+                ui.button('Mobile Uploader', icon='smartphone', on_click=lambda: show_page('mobile'))
+                .classes('w-full text-white nav-btn')
+                .style('justify-content: flex-start; padding: 12px 16px;')
+                .props('flat align=left')
+            )
             config_btn = (
                 ui.button('Configuration', icon='tune', on_click=lambda: show_page('vpinfe'))
                 .classes('w-full text-white nav-btn')
@@ -269,6 +294,7 @@ def build_app():
         collections_btn.classes(remove='nav-btn-active')
         media_btn.classes(remove='nav-btn-active')
         themes_btn.classes(remove='nav-btn-active')
+        mobile_btn.classes(remove='nav-btn-active')
         config_btn.classes(remove='nav-btn-active')
 
         # Set active button
@@ -280,6 +306,8 @@ def build_app():
             media_btn.classes(add='nav-btn-active')
         elif page_key == 'themes':
             themes_btn.classes(add='nav-btn-active')
+        elif page_key == 'mobile':
+            mobile_btn.classes(add='nav-btn-active')
         elif page_key == 'vpinfe':
             config_btn.classes(add='nav-btn-active')
 
@@ -299,20 +327,96 @@ def build_app():
                 tab_media.render_panel()
             elif page_key == 'themes':
                 tab_themes.render_panel()
+            elif page_key == 'mobile':
+                tab_mobile.build(standalone=False)
             elif page_key == 'vpinfe':
                 tab_vpinfe.render_panel()
 
-    # Show default page (tables) or saved page
-    saved_page = app.storage.user.get('active_page', 'tables')
-    show_page(saved_page)
+    # Determine initial page: URL ?page= param takes priority, then first-run, then saved page
+    global _first_run
+    page_param = app.storage.user.get('_page_param')
+    if page_param:
+        del app.storage.user['_page_param']
+
+    if _first_run:
+        initial_page = 'vpinfe'
+    elif page_param:
+        initial_page = page_param
+    else:
+        initial_page = app.storage.user.get('active_page', 'tables')
+    show_page(initial_page)
+
+    # Show dialog if requested via URL param, or first-run dialog
+    dialog_param = app.storage.user.get('_dialog_param')
+    if dialog_param:
+        del app.storage.user['_dialog_param']
+
+    if _first_run:
+        _first_run = False  # Only show once
+        _dialog_first_run()
+    elif dialog_param:
+        handler = _DIALOG_HANDLERS.get(dialog_param)
+        if handler:
+            handler()
+
+# Map of friendly URL param values to internal page keys
+_PAGE_ALIASES = {
+    'tables': 'tables',
+    'collections': 'collections',
+    'media': 'media',
+    'themes': 'themes',
+    'mobile': 'mobile',
+    'vpinfe': 'vpinfe',
+    'vpinfe_config': 'vpinfe',
+    'configuration': 'vpinfe',
+    'config': 'vpinfe',
+}
+
+def _dialog_test():
+    """Test dialog triggered by ?dialog=test."""
+    with ui.dialog() as dlg, ui.card():
+        ui.label('Testing dialog').classes('text-lg font-bold')
+        ui.button('Close', on_click=dlg.close)
+    dlg.open()
+
+def _dialog_first_run():
+    """Welcome dialog shown on first run when no vpinfe.ini existed."""
+    with ui.dialog() as dlg, ui.card().classes('p-6'):
+        ui.icon('settings_suggest', size='48px').classes('text-blue-400 self-center')
+        ui.label('Welcome to VPinFE!').classes('text-xl font-bold text-center')
+        ui.label(
+            'No configuration file was found so a default vpinfe.ini has been created. '
+            'Please configure your settings below, then restart VPinFE.'
+        ).classes('text-sm text-gray-300 text-center')
+        ui.button('Got it', on_click=dlg.close).classes('self-center mt-2')
+    dlg.open()
+
+# Registry mapping dialog param values to handler functions.
+# Add new entries here to support additional dialogs via ?dialog=<key>.
+_DIALOG_HANDLERS = {
+    'test': _dialog_test,
+    'first_run': _dialog_first_run,
+}
 
 @ui.page('/')
-def index():
+def index(page: str = '', dialog: str = ''):
+    if page:
+        resolved = _PAGE_ALIASES.get(page.lower())
+        if resolved:
+            app.storage.user['_page_param'] = resolved
+    if dialog:
+        key = dialog.lower()
+        if key in _DIALOG_HANDLERS:
+            app.storage.user['_dialog_param'] = key
     build_app()
 
 @ui.page('/remote')
 def remote_page():
     remote.build()
+
+@ui.page('/mobile')
+def mobile_page():
+    tab_mobile.build()
 
 
 # API endpoint for remote launch state (polled by frontend themes)
@@ -326,6 +430,47 @@ def get_remote_launch_state():
             "Access-Control-Allow-Methods": "GET",
             "Access-Control-Allow-Headers": "*",
         }
+    )
+
+
+@app.get('/api/download-table-vpxz')
+def download_table_vpxz(name: str):
+    """Zip a table folder and serve it as a .vpxz download, then clean up."""
+    import tempfile
+    import shutil
+    from starlette.responses import FileResponse
+    from starlette.background import BackgroundTask
+
+    tables_path = tab_mobile._get_tables_path()
+    table_dir = os.path.join(tables_path, name)
+
+    # Validate the path exists and is under tables root
+    real_table = os.path.realpath(table_dir)
+    real_root = os.path.realpath(tables_path)
+    if not real_table.startswith(real_root + os.sep):
+        return JSONResponse(content={"error": "Invalid table path"}, status_code=400)
+    if not os.path.isdir(table_dir):
+        return JSONResponse(content={"error": "Table not found"}, status_code=404)
+
+    # Create zip in a temp directory
+    tmp_dir = tempfile.mkdtemp()
+    zip_base = os.path.join(tmp_dir, name)
+    zip_path = shutil.make_archive(zip_base, 'zip', root_dir=tables_path, base_dir=name)
+    # Rename .zip to .vpxz
+    vpxz_path = zip_base + '.vpxz'
+    os.rename(zip_path, vpxz_path)
+
+    print(f"[Mobile] Created download archive: {vpxz_path}")
+
+    def cleanup():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        print(f"[Mobile] Cleaned up temp archive: {tmp_dir}")
+
+    return FileResponse(
+        vpxz_path,
+        media_type='application/octet-stream',
+        filename=f"{name}.vpxz",
+        background=BackgroundTask(cleanup),
     )
 
 
@@ -346,8 +491,7 @@ def _run_ui():
            port=_ui_port,
            reload=False,
            show=False,
-           storage_secret=STORAGE_SECRET,
-           reconnect_timeout=30.0)
+           storage_secret=STORAGE_SECRET)
 
 def start_manager_ui(port=8001):
     global _ui_thread, _ui_port

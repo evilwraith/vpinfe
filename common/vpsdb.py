@@ -3,6 +3,8 @@ import json
 from difflib import SequenceMatcher
 import os
 import re
+from pathlib import Path
+from platformdirs import user_config_dir
 
 
 class VPSdb:
@@ -23,6 +25,9 @@ class VPSdb:
         print("Initializing VPSdb")
 
         self._vpinfeIniConfig = vpinfeIniConfig
+        self._config_dir = Path(user_config_dir("vpinfe", "vpinfe"))
+        self._config_dir.mkdir(parents=True, exist_ok=True)
+        self._vpsdb_path = self._config_dir / "vpsdb.json"
         version = self.downloadLastUpdate()
 
         if version:
@@ -44,15 +49,15 @@ class VPSdb:
             self.rootTableDir = rootTableDir
 
             # Load database from local file
-            if self.fileExists('vpsdb.json'):
+            if self._vpsdb_path.exists():
                 try:
-                    with open('vpsdb.json', 'r', encoding="utf-8") as file:
+                    with open(self._vpsdb_path, 'r', encoding="utf-8") as file:
                         self.data = json.load(file)
                         print(f"Total VPSdb entries: {len(self.data)}")
                 except json.JSONDecodeError:
-                    print("Invalid JSON format in vpsdb.json.")
+                    print(f"Invalid JSON format in {self._vpsdb_path}")
             else:
-                print("JSON file vpsdb.json not found.")
+                print(f"JSON file {self._vpsdb_path} not found.")
 
         # Setup preferences
         self.tabletype = self._vpinfeIniConfig.config['Media']["tabletype"].lower()
@@ -129,7 +134,7 @@ class VPSdb:
         try:
             response = requests.get(VPSdb.vpsUrldb)
             response.raise_for_status()
-            with open('vpsdb.json', 'wb') as file:
+            with open(self._vpsdb_path, 'wb') as file:
                 file.write(response.content)
             print("Successfully downloaded vpsdb.json from VPSdb")
         except requests.RequestException as e:
@@ -180,7 +185,10 @@ class VPSdb:
 
         remoteMd5 = metadata.get(f"{key}_md5", "")
 
-        if self.fileExists(filename):
+        # Check the explicit path first, then fall back to the default path
+        actual_path = filename if self.fileExists(filename) else (defaultFilename if self.fileExists(defaultFilename) else None)
+
+        if actual_path:
             # Check if the remote hash changed compared to what we stored
             if metaConfig and mediaType and remoteMd5:
                 existing = metaConfig.getMedia(mediaType)
@@ -188,8 +196,8 @@ class VPSdb:
                     storedMd5 = existing.get("MD5Hash", "")
                     if storedMd5 and storedMd5 != remoteMd5:
                         print(f"MD5 changed for {mediaType} ({storedMd5} -> {remoteMd5}), re-downloading")
-                        self.downloadMediaFile(tableId, metadata[key], filename)
-            return (filename, remoteMd5)
+                        self.downloadMediaFile(tableId, metadata[key], actual_path)
+            return (actual_path, remoteMd5)
 
         self.downloadMediaFile(tableId, metadata[key], defaultFilename)
         if self.fileExists(defaultFilename):
@@ -246,6 +254,9 @@ class VPSdb:
         _process('bg_video', tablemediajson.get(self.tablevideoresolution), 'bg_video', table.BGVideoPath, f"{table.fullPathTable}/medias/bg.mp4")
         _process('dmd_video', tablemediajson.get(self.tablevideoresolution), 'dmd_video', table.DMDVideoPath, f"{table.fullPathTable}/medias/dmd.mp4")
         _process(f'{self.tabletype}_video', tablemediajson.get(self.tablevideoresolution), f'{self.tabletype}_video', table.TableVideoPath, f"{table.fullPathTable}/medias/{self.tabletype}.mp4")
+
+        # Audio
+        _process('audio', tablemediajson, 'audio', table.AudioPath, f"{table.fullPathTable}/medias/audio.mp3")
 
     # ----------------------------------------------------------------------
     def updateTable(self, name, manufacturer, year):

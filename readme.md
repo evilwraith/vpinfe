@@ -10,7 +10,7 @@
 - Automatic [vpx patching](https://github.com/jsm174/vpx-standalone-scripts) for Linux & Mac
 - Fully customizable UI theming using HTML, JS and CSS
 - JSON-based table metadata with VPX file parsing and feature detection
-- Whitespace!
+- Mobile transfer support for VPinball on Android and iOS (Web Send & VPXZ Download)
 
 ## Themes
 Cab
@@ -41,38 +41,48 @@ carousel2 (Single Screen)
 
 ## Installing
 
-### Ubuntu 25.10 (GTK):
+<details>
+<summary><h3>Ubuntu 25.10 (GTK)</h3></summary>
+
 Beware if you upgrade to 25.10 as they [removed gamepad support from webkitgtk](https://launchpad.net/ubuntu/+source/webkit2gtk/2.48.5-1ubuntu1):
 ```
-    * Disable gamepad feature on Ubuntu since libmanette is in universe there. 
+    * Disable gamepad feature on Ubuntu since libmanette is in universe there.
 
-libmanette is a library that provides a GObject-based API for interacting with gamepads. The change log indicates that the developers of the webkit2gtk package chose to disable the built-in gamepad support in this specific Ubuntu package version because the necessary dependency (libmanette) is located in the "universe" repository (which contains community-maintained software) rather than the main "main" repository. This decision was likely made to avoid dependency issues or to ensure the stability of the core webkit2gtk package within Ubuntu's main archives. 
+libmanette is a library that provides a GObject-based API for interacting with gamepads. The change log indicates that the developers of the webkit2gtk package chose to disable the built-in gamepad support in this specific Ubuntu package version because the necessary dependency (libmanette) is located in the "universe" repository (which contains community-maintained software) rather than the main "main" repository. This decision was likely made to avoid dependency issues or to ensure the stability of the core webkit2gtk package within Ubuntu's main archives.
 Therefore, this package version likely has gamepad support explicitly disabled in Ubuntu.
 ```
 This breaks the gamepad functionally in VPinfe.  There is currently no work around for this.
 
-### Debian 13
+</details>
+
+<details>
+<summary><h3>Debian 13</h3></summary>
+
 ```
 sudo apt install python3.13-venv python3-evdev
 git clone https://github.com/superhac/vpinfe.git
 cd vpinfe
 python3 -m venv vvv --system-site-packages
 source vvv/bin/activate
-pip install nicegui screeninfo colorama olefile pynput nicegui==2.* websockets platformdirs
+pip install nicegui screeninfo colorama olefile pynput nicegui==2.* pywebview platformdirs
 deactivate
 
 # then run like this inside the vpinfe dir
 GDK_BACKEND=x11 vvv/bin/python3 main.py
 ```
 
-### Ubuntu 25.04 (GTK):
+</details>
+
+<details>
+<summary><h3>Ubuntu 25.04 (GTK)</h3></summary>
+
 ```
 sudo apt install python3-gi python3-gi-cairo gir1.2-webkit2-4.1 python3-webview python3-screeninfo platformdirs
 git clone https://github.com/superhac/vpinfe.git
 cd vpinfe
 python3 -m venv vvv --system-site-packages
 source vvv/bin/activate
-pip install websockets nicegui screeninfo colorama
+pip install pywebview nicegui screeninfo colorama
 deactivate
 
 # then run like this inside the vpinfe dir
@@ -82,25 +92,52 @@ GDK_BACKEND=x11 vvv/bin/python3 main.py
 *** There is a known issue with positioning windows under wayland.  To get around that run VpinFE with the following env var:
 `GDK_BACKEND=x11 python3 main.py`.
 
-### Fedora ???? (KDE):
+</details>
+
+<details>
+<summary><h3>Fedora ???? (KDE)</h3></summary>
+
 ```
 git clone https://github.com/superhac/vpinfe.git
 ```
 
-### Mac ????: 
-```
-git clone https://github.com/superhac/vpinfe.git
-cd vpinfe
-pip install -r osx_requirements.txt
-```
+</details>
 
-### Windows 11
+<details>
+<summary><h3>Mac</h3></summary>
+After downloading the chosen build (bundled with Chromium, or Slim if you already have Chrome or Chromium installed).
+Open the DMG and move the app to your applications folder. 
  
+!<img width="604" height="373" alt="Screenshot 2026-02-19 at 11 04 49 AM" src="https://github.com/user-attachments/assets/f981c4a2-7b3a-45c7-8fb2-38ee7b10ec3b" />
+
+When you initiall run the app from your applications folder, you'll get this message: 
+
+!<img width="259" height="282" alt="Screenshot 2026-02-17 at 2 42 08 PM" src="https://github.com/user-attachments/assets/e6130f83-b161-44e9-938a-c1ccdb02a48e" />
+
+Click "Done" and then go to System Settings > Privacy & Security, scroll down and click  "Open Anyway".
+
+!<img width="488" height="125" alt="Screenshot 2026-02-19 at 11 07 35 AM" src="https://github.com/user-attachments/assets/5327407a-d543-4b25-9e82-2bbfa9b8b07c" />
+
+Click "Open Anyway" again and then authorize the app. 
+
+!<img width="258" height="348" alt="Screenshot 2026-02-19 at 11 08 50 AM" src="https://github.com/user-attachments/assets/bc5438ac-38d5-4b7b-8ecb-a5136a02a368" />
+
+The app may start then, but there's a chance you'll have to start it again. 
+You'll also get prompted to allow network access and allow app management. 
+If you don't allow either of these, they can be enabled later in System Settings. 
+System Settings > Privacy & Security> Local Network 
+and 
+System Settings > Privacy & Security> App Management 
+</details>
+
+<details>
+<summary><h3>Windows 11</h3></summary>
+
 **Requirements**
 
 * Python 3.13.12
 
->[!CAUTION] 
+>[!CAUTION]
 >If you use the top Button, you might download a wrong Version not working with the following Steps
 
 ![image](https://github.com/user-attachments/assets/201ead7f-297f-4b2a-9bf2-f085c14feba8)
@@ -120,7 +157,7 @@ cd vpinfe
 python -m pip install —-upgrade pip
 python -m venv venv-vpinfe --system-site-packages
 .\venv-vpinfe\scripts\Activate.ps1
-pip install websockets screeninfo colorama requests olefile nicegui pynput
+pip install pywebview screeninfo colorama requests olefile nicegui pynput
 python main.py -h
 ```
 * add Shortcut to this Script on the Desktop
@@ -133,8 +170,9 @@ Python Main.py
 >[!TIP]
 >You might have to change the "Open With" from Editor to PowerShell
 
+</details>
 
-### Setup your configuration (vpinfe.ini)
+## Setup your configuration (vpinfe.ini)
 
 VPinFE uses a platform-specific configuration directory to store its settings. On first run, VPinFE will automatically create a default `vpinfe.ini` file in the following location:
 
@@ -310,11 +348,15 @@ options:
   --buildmeta           Builds the meta.ini file in each table dir
   --vpxpatch            Using vpx-standalone-scripts will attempt to load patches automatically
   --gamepadtest         Testing and mapping your gamepad via js api
+  --headless            Run web servers/services only, skip the pywebview frontend
+  --claim-user-media    Bulk mark existing media files as user-sourced so they won't be overwritten by vpinmediadb
   --no-media            When building meta.ini files don't download the images at the same time.
   --update-all          When building meta.ini reparse all tables to recreate the meta.ini file.
+  --user-media          With --buildmeta: skip vpinmediadb downloads and claim existing local media as user-sourced
+  --table TABLE         Specify a single table folder name to process with --buildmeta or --claim-user-media
 ```
 
-## Vpinfe.ini
+## Vpinfe.ini Definition
 ### [Displays]
 | Key               | Description                                                                                         |
 | ----------------- | -------------------------------------------------------------------------                           |
@@ -358,7 +400,13 @@ options:
 | ----------------- | ------------------------------------------------------------------------- |
 | themeassetsport   | Port for the theme assets HTTP server. Default is `8000`.                 |
 | manageruiport     | Port for the Manager UI (NiceGUI) server. Default is `8001`.              |
-| wsport            | Port for the WebSocket bridge (JS↔Python communication). Default is `8002`. |
+
+### [Mobile]
+| Key        | Description                                              |
+| ---------- | -------------------------------------------------------- |
+| deviceip   | IP address of the mobile device running VPinball         |
+| deviceport | Port of the mobile device's web server. Default is `2112` |
+| chunksize  | Upload chunk size in bytes. Default is `1048576` (1MB)    |
 
 ## Table Metadata File (based on the Zero install table format)
 When you run VPinFE with the `--buildmeta` option it recursively goes through your table directory attempts to match your tables to their VPSDB id.  When matched, it will then parse the VPX for the table for more meta information and produce a `TABLE FOLDER NAME(manufactuer year).info` in that tables directory.  Heres an example for the table 1-2-3:
@@ -480,7 +528,7 @@ When you run VPinFE with the `--buildmeta` option it recursively goes through yo
 
 - Medias
 
-  Tracks downloaded media files per table. Preserved across `--buildmeta --update-all`. Each entry is keyed by media type (bg, dmd, table, fss, wheel, cab, realdmd, realdmd_color):
+  Tracks downloaded media files per table. Preserved across `--buildmeta --update-all`. Each entry is keyed by media type (bg, dmd, table, fss, wheel, cab, realdmd, realdmd_color, audio):
   - Source: Where the media was downloaded from (e.g. "vpinmediadb" or "user" for manually uploaded)
   - Path: Full local path to the media file
   - MD5Hash: MD5 hash of the media from the source. On `--buildmeta`, if the remote MD5 differs from the stored hash, the image is re-downloaded automatically.
@@ -499,20 +547,55 @@ Table Folder Name (Manufacturer Year)/
     ├── cab.png
     ├── flyer.png
     ├── realdmd.png
-    └── realdmd-color.png
+    ├── realdmd-color.png
+    └── audio.mp3
 ```
 
 | File Name         | Image Type                              |
 | ----------------- | --------------------------------------- |
 | bg.png            | Backglass Image                         |
 | dmd.png           | DMD Image                               |
-| table.png         | Table Image (portrait)                  |
+| table.png         | Table Image (landscape)                 |
+| table.mp4         | Table Video (landscape)                 |
 | fss.png           | Full Single Screen Image                |
 | wheel.png         | Icon on Hud                             |
 | cab.png           | A cabinet image of the pinball machine  |
 | flyer.png         | Promotional flyer image                 |
 | realdmd.png       | Real DMD for use with ZeDMD            |
 | realdmd-color.png | Real DMD (Colorized) for use with ZeDMD |
+| audio.mp3         | Table audio track for frontend playback  |
+
+## Using Your Own Media (User Media)
+
+By default, `--buildmeta` downloads media artwork from [VPinMediaDB](https://github.com/superhac/vpinmediadb) and tracks updates via MD5 hashes. If you prefer to use your own media collection instead, VPinFE provides two options to mark media as "user-sourced" so it won't be pulled from or overwritten by VPinMediaDB.
+
+### `--claim-user-media` (Standalone)
+
+Scans all table directories for existing media files in the `medias/` subfolder and marks them as `"Source": "user"` in each table's `.info` file. Use this if you already have `.info` files and want to retroactively protect your media from being overwritten.
+
+```bash
+# Claim all existing media across all tables
+python3 main.py --claim-user-media
+
+# Claim media for a single table
+python3 main.py --claim-user-media --table "Back To The Future - The Pinball (Data East 1990)"
+```
+
+### `--user-media` (With `--buildmeta`)
+
+A modifier for `--buildmeta` that skips VPinMediaDB downloads entirely and instead claims any media files found locally as user-sourced. Use this when building metadata from scratch and you never want VPinMediaDB media.
+
+```bash
+# Build metadata and claim local media instead of downloading
+python3 main.py --buildmeta --user-media
+
+# Rebuild all metadata with user media
+python3 main.py --buildmeta --update-all --user-media
+```
+
+Once media is marked as `"Source": "user"`, subsequent runs of `--buildmeta` will skip downloading that media type from VPinMediaDB. You can also set individual media sources to "user" via the Media Manager UI.
+
+**Note:** Only media files that actually exist on disk get claimed as user-sourced. If a media type is missing (e.g., you don't have a `dmd.png`), no entry is written for it. This means the next normal `--buildmeta` run will fill in any gaps by downloading the missing media from VPinMediaDB.
 
 ## VPX Table Patches
 VPinFE can automaticlly pull patches from [vpx-standalone-scripts](https://github.com/jsm174/vpx-standalone-scripts) via the `--vpxpatch` CLI option if a matching patch can be found.  
@@ -522,26 +605,44 @@ VPinFE can automaticlly pull patches from [vpx-standalone-scripts](https://githu
 ## Server Listeners
 There are three server listeners started on your machine:
 
-| Service   | Bound Address/Port | Description                                                           |
-| --------- | ---------------    | --------------------------------------------------------------------- |
-| HTTP      | 127.0.0.1:8000     | Python HTTPServer. Serves tables media assets and themes (configurable) |
-| HTTP      | 0.0.0.0:8001       | NiceGui server. Handles the UI for configuration and management (configurable) |
-| WebSocket | 127.0.0.1:8002     | WebSocket bridge. JS↔Python API communication for Chromium windows (configurable) |
+| Service | Bound Address/Port | Description                                                           |
+| ------- | ---------------    | --------------------------------------------------------------------- |
+| HTTP    | 127.0.0.1:RANDOM   | PyWebView server.  Frontend UI/Themes                                 |
+| HTTP    | 127.0.0.1:8000     | Python HTTPServer. Serves tables media assets (configurable)          |
+| HTTP    | 0.0.0.0:8001       | NiceGui sever.  Handles the UI for configuration and management (configurable) |
 
-The only service that is externally accessible from your machine is the NiceGUI management UI. This is setup like this so people with cabinets can administer it remotely.
+The only service that externally accessable from your machine its UI for managing it.  This is setup like this so people with cabinets can administer it remotely.
 
-The ports can be configured in your `vpinfe.ini` file under the `[Network]` section:
+The ports for the theme assets server and manager UI can be configured in your `vpinfe.ini` file under the `[Network]` section:
 
 ```ini
 [Network]
 themeassetsport = 8000
 manageruiport = 8001
-wsport = 8002
 ```
 
 External Web Endpoints:
 - Table/VPX Configuration and Management: http://{YOUR-IP}:8001
 - Remote Control: http://{YOUR-IP}:8001/remote
+- Mobile Uploader: http://{YOUR-IP}:8001/mobile
+
+## Mobile Transfer
+
+VPinFE includes a mobile transfer feature for sending tables to the mobile version of VPinball on Android and iOS. Access it from the Manager UI sidebar ("Mobile Uploader") or directly at `http://{YOUR-IP}:8001/mobile`.
+
+### Web Send
+Transfers tables directly to a mobile device running VPinball's built-in web server. To use this:
+
+1. Open VPinball on your mobile device and enable the web server in its settings
+2. Note the IP address and port displayed in VPinball's settings
+3. Enter the device IP and port in VPinFE's Mobile Uploader connection settings (saved to `vpinfe.ini` under `[Mobile]`)
+4. Click "Check Device" to verify the connection and see which tables are already installed
+5. Send individual tables or batch-send multiple selected tables
+
+Tables already on the device are shown with a green checkmark. You can also delete tables from the device directly.
+
+### VPXZ Download
+Packages any of your tables into a `.vpxz` archive (zip format) for manual transfer. Click the download icon next to a table to generate and download the archive.
 
 # Enabling the Shutdown Feature
 If you plan on using the Shutdown/Reboot option in the frontend or in the remote you need to have the right permissions on some systems:

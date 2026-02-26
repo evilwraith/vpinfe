@@ -48,12 +48,15 @@ class WebSocketBridge:
         'build_metadata',
         'get_theme_config',
         'get_theme_name',
+        'get_table_orientation',
+        'get_table_rotation',
         'get_theme_assets_port',
         'get_theme_index_page',
         'send_event',
         'send_event_all_windows',
         'send_event_all_windows_incself',
         'playSound',
+        'trigger_audio_play',
     }
 
     def __init__(self, port=8002):
